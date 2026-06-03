@@ -52,3 +52,13 @@ class EncryptionService:
         if not value:
             return ""
         return self._load().decrypt(value).decode("utf-8")
+
+    def encrypt_bytes(self, data: bytes) -> bytes:
+        if not data:
+            return b""
+        return self._load().encrypt(data)
+
+    def decrypt_bytes(self, token: bytes) -> bytes:
+        if not token:
+            return b""
+        return self._load().decrypt(token)

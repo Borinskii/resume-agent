@@ -1,0 +1,13 @@
+{% set accepted = view.suggestions | selectattr('accepted') | list %}
+<div class="doc-status">
+  <span>{{ accepted | length }} of {{ view.suggestions | length }} suggestion(s) applied</span>
+  {% if view.unplaced_indices %}
+    <span class="warn">{{ view.unplaced_indices | length }} not auto-placed (appended for review)</span>
+  {% endif %}
+  {% if view.format_preserved and accepted %}
+    <span>.docx download keeps original formatting</span>
+  {% endif %}
+</div>
+<div class="doc-paper">
+  <pre class="doc-text">{{ view.edited_cv_text if view.edited_cv_text else "No CV text available." }}</pre>
+</div>

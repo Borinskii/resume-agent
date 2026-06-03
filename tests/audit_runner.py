@@ -142,8 +142,8 @@ def main() -> int:
     check("Valid PDF analyze returns 200", r.status_code == 200, f"status={r.status_code}")
     body = r.text
     check("Response shows summary-strip metric cards", "summary-strip" in body and "metric-card" in body)
-    check("Response shows benchmark role cards", 'data-role-card' in body)
-    check("Response shows export links", '/exports/' in body and 'markdown' in body)
+    check("Response shows vacancy cards", 'vac-card' in body)
+    check("Response links to per-vacancy editor", '/editor/' in body)
     check("Highlight data-skills attribute present", 'data-skills=' in body)
 
     # DB verification
@@ -158,26 +158,18 @@ def main() -> int:
     else:
         analysis_id = None
 
-    print("\n== EXPORT ENDPOINTS ==")
+    print("\n== GAP REPORT EXPORT ==")
     if analysis_id:
         r = client.get(f"/exports/{analysis_id}/markdown")
-        check("GET markdown export 200", r.status_code == 200, f"status={r.status_code}")
+        check("GET markdown gap report 200", r.status_code == 200, f"status={r.status_code}")
         md = r.text
         check("Markdown contains H1 + Summary", md.startswith("# CV gap report") and "## Summary" in md)
         check("Markdown contains role section", "##" in md and any(kw in md for kw in ("Backend", "Engineer", "ML")))
 
-        r = client.get(f"/exports/{analysis_id}/docx")
-        ok_docx = (
-            r.status_code == 200
-            and r.headers.get("content-type", "").startswith("application/vnd.openxmlformats")
-            and r.content[:2] == b"PK"
-        )
-        check("GET docx export returns ZIP-magic content", ok_docx, f"status={r.status_code} ct={r.headers.get('content-type','')}")
-
         # Cross-session isolation: a fresh client with no cookie must NOT see this analysis
         anon = httpx.Client(base_url=BASE, timeout=10)
         r = anon.get(f"/exports/{analysis_id}/markdown")
-        check("Cross-session markdown export blocked", r.status_code == 404, f"status={r.status_code}")
+        check("Cross-session gap report blocked", r.status_code == 404, f"status={r.status_code}")
         anon.close()
     else:
         check("Skipping exports — no analysis", False, "no analysis to export")
@@ -224,6 +216,40 @@ def main() -> int:
                 data={"status": "definitely_not_a_status", "note": ""},
             )
             check("Invalid status rejected with 400", r.status_code == 400, f"status={r.status_code}")
+
+    print("\n== PER-VACANCY RESUME EDITOR ==")
+    # Note: rewrite generation (POST /editor/{id}/{i}/rewrites) calls the local LLM
+    # and is slow, so the audit exercises route plumbing without generating.
+    if analysis_id:
+        r = client.get(f"/editor/{analysis_id}/0")
+        check("GET /editor/{id}/0 returns 200", r.status_code == 200, f"status={r.status_code}")
+        editor_html = r.text
+        check("Editor shows vacancy requirements", "What the role asks for" in editor_html)
+        check("Editor has document pane", 'id="doc-preview"' in editor_html)
+        check("Editor exposes download links", "/download?fmt=docx" in editor_html)
+
+        r = client.post(f"/editor/{analysis_id}/0/apply", data={})
+        check("POST /editor/{id}/0/apply returns 200", r.status_code == 200, f"status={r.status_code}")
+
+        edits = query_db("SELECT edits_json FROM cv_role_edits WHERE analysis_id = ? AND role_index = 0", (analysis_id,))
+        check("DB: cv_role_edits row created", len(edits) == 1, f"rows={len(edits)}")
+
+        r = client.get(f"/editor/{analysis_id}/0/download?fmt=md")
+        check("Editor markdown download 200", r.status_code == 200 and r.text.startswith("# "))
+        r = client.get(f"/editor/{analysis_id}/0/download?fmt=docx")
+        ok_docx = r.status_code == 200 and r.content[:2] == b"PK"
+        check("Editor docx download is a ZIP", ok_docx, f"status={r.status_code}")
+
+        # A second vacancy index also resolves (per-vacancy routing).
+        r = client.get(f"/editor/{analysis_id}/1")
+        check("Editor opens a second vacancy", r.status_code == 200, f"status={r.status_code}")
+
+        anon = httpx.Client(base_url=BASE, timeout=10)
+        r = anon.get(f"/editor/{analysis_id}/0")
+        check("Editor cross-session blocked (404)", r.status_code == 404, f"status={r.status_code}")
+        anon.close()
+    else:
+        check("Skipping editor — no analysis", False, "no analysis")
 
     print("\n== AUTH / RATE-LIMIT ==")
     # Cross-session: anon client cannot see history / can't see this user's applications
