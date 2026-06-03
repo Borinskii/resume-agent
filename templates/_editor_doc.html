@@ -1,0 +1,67 @@
+{% if view.suggestions %}
+  <form id="ed-doc" class="ed-doc"
+        hx-post="/editor/{{ view.analysis_id }}/{{ view.role_index }}/apply"
+        hx-target="#ed-doc-wrap" hx-swap="innerHTML" hx-trigger="ed-apply">
+    <div class="ed-docmeta">
+      <span>{{ view.accepted_count }} of {{ view.suggestions|length }} suggestion(s) applied</span>
+      {% if view.format_preserved and view.accepted_count %}<span class="ed-docmeta-ok">.docx download keeps your original formatting</span>{% endif %}
+    </div>
+
+    <div class="doc-paper">
+      {% for seg in view.segments %}
+        {% if seg.type == "text" %}
+          <p class="doc-line{% if not seg.text %} doc-blank{% endif %}">{{ seg.text }}</p>
+        {% else %}
+          <div class="doc-anchor{% if seg.accepted %} is-accepted{% endif %}" data-anchor="{{ seg.index }}">
+            <p class="anchor-text" data-toggle="{{ seg.index }}" tabindex="0" role="button" aria-expanded="false">{{ seg.display }}</p>
+            <input type="checkbox" name="accept_{{ seg.index }}" {% if seg.accepted %}checked{% endif %} hidden>
+            <div class="anchor-card" hidden>
+              <div class="ac-head">
+                <strong>{{ seg.skill }}</strong>
+                <span class="ac-tag">{{ 'applied' if seg.accepted else 'suggested' }}</span>
+                {% if seg.provider %}<span class="sg-provider">{{ seg.provider }}</span>{% endif %}
+              </div>
+              <label class="ac-label">Suggested wording (editable)</label>
+              <textarea name="text_{{ seg.index }}" rows="2">{{ seg.editable }}</textarea>
+              <details class="ac-why"><summary>Why this edit</summary><p>{{ seg.why }}</p></details>
+              <div class="ac-actions">
+                <button type="button" class="btn btn-teal btn-sm" data-apply="{{ seg.index }}">{{ 'Applied' if seg.accepted else 'Apply' }}</button>
+                <button type="button" class="btn btn-sm" data-dismiss="{{ seg.index }}">{{ 'Revert' if seg.accepted else 'Dismiss' }}</button>
+              </div>
+            </div>
+          </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+
+    {% if view.extra_suggestions %}
+      <div class="ed-extra">
+        <p class="ed-extra-note">These suggestions reference bullets not found verbatim in your CV text — review and place manually.</p>
+        {% for s in view.extra_suggestions %}
+          <div class="anchor-card extra-card{% if s.accepted %} is-accepted{% endif %}">
+            <div class="ac-head"><strong>{{ s.skill_name }}</strong>{% if s.provider %}<span class="sg-provider">{{ s.provider }}</span>{% endif %}</div>
+            <p class="sg-orig"><b>Your bullet:</b> {{ s.original_bullet }}</p>
+            <input type="checkbox" name="accept_{{ s.index }}" {% if s.accepted %}checked{% endif %} hidden>
+            <textarea name="text_{{ s.index }}" rows="2">{{ s.edited_text if s.edited_text else s.suggested_bullet }}</textarea>
+            <div class="ac-actions">
+              <button type="button" class="btn btn-teal btn-sm" data-apply="{{ s.index }}">{{ 'Applied' if s.accepted else 'Apply' }}</button>
+              <button type="button" class="btn btn-sm" data-dismiss="{{ s.index }}">{{ 'Revert' if s.accepted else 'Dismiss' }}</button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </form>
+{% elif view.rewrites_generated %}
+  <div class="doc-paper">
+    <div class="ed-empty">
+      No source-backed suggestions for this vacancy. The role's requirements are in the chips above;
+      nothing in your CV mapped to a rephrasable bullet. Your document is shown unchanged below.
+    </div>
+    {% for seg in view.segments %}
+      <p class="doc-line{% if not seg.text %} doc-blank{% endif %}">{{ seg.text if seg.type == 'text' else seg.display }}</p>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="ed-loading"><span class="spinner spinner-dark" aria-hidden="true"></span> Generating…</div>
+{% endif %}

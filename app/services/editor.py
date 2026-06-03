@@ -71,9 +71,15 @@ class EditorView:
     gaps: list[GapItem] = field(default_factory=list)
     base_cv_text: str = ""
     edited_cv_text: str = ""
+    segments: list[dict] = field(default_factory=list)
+    extra_suggestions: list[Suggestion] = field(default_factory=list)
     unplaced_indices: list[int] = field(default_factory=list)
     has_llm_suggestions: bool = False
     rewrites_generated: bool = False
+
+    @property
+    def accepted_count(self) -> int:
+        return sum(1 for s in self.suggestions if s.accepted)
 
 
 IMPORTANCE_LABEL = {
@@ -125,7 +131,7 @@ def build_editor_view(
         )
 
     gaps = _gap_items(role)
-    edited_cv_text, unplaced = apply_edits_text(base_cv_text, suggestions)
+    segments, edited_cv_text, unplaced, extras = _assemble(base_cv_text, suggestions)
 
     source_ext = record.cv_ext or ""
     can_preserve = source_ext == "docx" and bool(record.cv_blob)
@@ -151,6 +157,8 @@ def build_editor_view(
         gaps=gaps,
         base_cv_text=base_cv_text,
         edited_cv_text=edited_cv_text,
+        segments=segments,
+        extra_suggestions=extras,
         unplaced_indices=unplaced,
         has_llm_suggestions=bool(suggestions),
         rewrites_generated=rewrites_generated,
@@ -223,45 +231,82 @@ def _gap_items(role: dict) -> list[GapItem]:
     return gaps
 
 
-def apply_edits_text(cv_text: str, suggestions: list[Suggestion]) -> tuple[str, list[int]]:
-    """Plain-text splice for the live preview pane. Returns (text, unplaced indices)."""
+def _assemble(
+    cv_text: str,
+    suggestions: list[Suggestion],
+) -> tuple[list[dict], str, list[int], list[Suggestion]]:
+    """Build the interactive document.
+
+    Returns (segments, edited_text, unplaced_indices, extra_suggestions).
+    - segments: ordered list of {"type": "text"|"anchor", ...} for inline rendering.
+      Anchor segments carry their suggestion so the template can underline the
+      bullet and expand a card in place.
+    - edited_text: plain rendering (accepted edits applied) for md/txt download.
+    - unplaced_indices: accepted suggestions whose source bullet was not found.
+    - extra_suggestions: suggestions not matched to any line (shown after the doc).
+    """
     if not cv_text:
-        accepted_now = [s for s in suggestions if s.accepted and s.effective_text]
-        if not accepted_now:
-            return "", []
-        block = "\n".join(f"- {s.effective_text}" for s in accepted_now)
-        return f"(No parsed CV text was available.)\n\nSuggested bullets:\n{block}", [s.index for s in accepted_now]
+        accepted = [s for s in suggestions if s.accepted and s.effective_text]
+        text = ""
+        if accepted:
+            text = "(No parsed CV text was available.)\n\nSuggested bullets:\n" + "\n".join(
+                f"- {s.effective_text}" for s in accepted
+            )
+        return [], text, [s.index for s in accepted], list(suggestions)
 
     lines = cv_text.split("\n")
     norm_lines = [_normalize_ws(line) for line in lines]
-    used_line: set[int] = set()
-    unplaced: list[int] = []
+    line_to_sugg: dict[int, Suggestion] = {}
+    used: set[int] = set()
+    matched: set[int] = set()
 
     for suggestion in suggestions:
-        if not suggestion.accepted:
-            continue
-        target = suggestion.effective_text
         norm_orig = _normalize_ws(suggestion.original_bullet)
-        if not target or not norm_orig:
+        if not norm_orig:
             continue
-        placed = False
         for i, norm_line in enumerate(norm_lines):
-            if i in used_line or not norm_line:
+            if i in used or not norm_line:
                 continue
             if norm_orig in norm_line or norm_line in norm_orig:
-                lines[i] = target
-                norm_lines[i] = _normalize_ws(target)
-                used_line.add(i)
-                placed = True
+                line_to_sugg[i] = suggestion
+                used.add(i)
+                matched.add(suggestion.index)
                 break
-        if not placed:
-            unplaced.append(suggestion.index)
 
-    edited = "\n".join(lines)
+    segments: list[dict] = []
+    for i, line in enumerate(lines):
+        suggestion = line_to_sugg.get(i)
+        if suggestion is None:
+            segments.append({"type": "text", "text": line})
+        else:
+            segments.append({
+                "type": "anchor",
+                "index": suggestion.index,
+                "skill": suggestion.skill_name,
+                "provider": suggestion.provider,
+                "original": line,
+                "suggested": suggestion.suggested_bullet,
+                "editable": suggestion.effective_text,
+                "why": suggestion.why,
+                "accepted": suggestion.accepted,
+                "display": suggestion.effective_text if suggestion.accepted else line,
+            })
+
+    extras = [s for s in suggestions if s.index not in matched]
+    unplaced = [s.index for s in extras if s.accepted and s.effective_text]
+
+    edited = "\n".join(seg.get("display", seg.get("text", "")) for seg in segments)
     if unplaced:
         by_index = {s.index: s for s in suggestions}
         review = "\n".join(f"- {by_index[i].effective_text}" for i in unplaced if i in by_index)
         edited += "\n\n--- Suggested edits that could not be auto-placed (review and insert manually) ---\n" + review
+
+    return segments, edited, unplaced, extras
+
+
+def apply_edits_text(cv_text: str, suggestions: list[Suggestion]) -> tuple[str, list[int]]:
+    """Plain-text rendering with accepted edits applied. Returns (text, unplaced)."""
+    _segments, edited, unplaced, _extras = _assemble(cv_text, suggestions)
     return edited, unplaced
 
 

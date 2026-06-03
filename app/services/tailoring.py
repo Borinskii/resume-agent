@@ -92,6 +92,7 @@ def _generate(
         return []
 
     rewrites: list[TailoredRewrite] = []
+    used_bullets: set[str] = set()
     for kind, action_title, source_quote in actions:
         if kind != "highlight":
             continue
@@ -101,6 +102,13 @@ def _generate(
         bullet = _pick_bullet_for_quote(bullets, source_quote) or source_quote
         if not bullet:
             continue
+
+        # One suggestion per source bullet: a line can only be reworded once,
+        # so do not emit two cards anchored to the same bullet.
+        bullet_key = re.sub(r"\s+", " ", bullet).strip().lower()
+        if bullet_key in used_bullets:
+            continue
+        used_bullets.add(bullet_key)
 
         skill_name = _extract_skill_from_title(action_title)
         cache_key = _cache_key(client.provider, bullet, role_title, skill_name)

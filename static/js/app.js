@@ -22,6 +22,51 @@ document.addEventListener("click", (event) => {
   trigger.textContent = nowHidden ? "Details" : "Hide details";
 });
 
+// --- Resume editor: inline suggestion cards -------------------------------
+// Toggle a suggestion card by clicking its underlined bullet.
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const toggle = event.target.closest("[data-toggle]");
+  if (!toggle || event.target.closest(".anchor-card")) return;
+  const anchor = toggle.closest(".doc-anchor");
+  const card = anchor && anchor.querySelector(".anchor-card");
+  if (!card) return;
+  const willShow = card.hidden;
+  // Close other open cards for a clean single-focus view.
+  document.querySelectorAll(".anchor-card:not([hidden])").forEach((c) => { if (c !== card) c.hidden = true; });
+  card.hidden = !willShow;
+  toggle.setAttribute("aria-expanded", String(willShow));
+});
+
+// Keyboard: Enter/Space on a focused bullet toggles its card.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  if (!(event.target instanceof Element)) return;
+  const toggle = event.target.closest("[data-toggle]");
+  if (!toggle) return;
+  event.preventDefault();
+  toggle.click();
+});
+
+function submitEditorForm() {
+  const form = document.getElementById("ed-doc");
+  if (form) form.dispatchEvent(new CustomEvent("ed-apply"));
+}
+
+// Apply / Revert a suggestion: flip its hidden checkbox and re-render the doc.
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const applyBtn = event.target.closest("[data-apply]");
+  const dismissBtn = event.target.closest("[data-dismiss]");
+  if (!applyBtn && !dismissBtn) return;
+  const card = (applyBtn || dismissBtn).closest(".anchor-card, .extra-card");
+  const wrap = (applyBtn || dismissBtn).closest(".doc-anchor, .extra-card");
+  const checkbox = (wrap || card) && (wrap || card).querySelector('input[type="checkbox"]');
+  if (!checkbox) return;
+  checkbox.checked = Boolean(applyBtn);
+  submitEditorForm();
+});
+
 // Drag-and-drop on the file drop label.
 const fileDrop = document.querySelector("[data-file-drop]");
 if (fileDrop) {
