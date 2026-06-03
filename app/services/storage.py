@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +59,38 @@ CREATE TABLE IF NOT EXISTS llm_cache (
     response_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS cv_edits (
+    analysis_id INTEGER PRIMARY KEY,
+    edits_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS role_rewrites (
+    analysis_id INTEGER NOT NULL,
+    role_index INTEGER NOT NULL,
+    rewrites_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (analysis_id, role_index),
+    FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS cv_role_edits (
+    analysis_id INTEGER NOT NULL,
+    role_index INTEGER NOT NULL,
+    edits_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (analysis_id, role_index),
+    FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+);
 """
+
+# Columns added after v1. (table, column, ddl-type) — applied if missing.
+_MIGRATIONS = (
+    ("analyses", "cv_blob", "BLOB"),
+    ("analyses", "cv_ext", "TEXT"),
+)
 
 
 VALID_APPLICATION_STATUSES = (
@@ -86,15 +118,25 @@ class StoredAnalysis:
     cv_ciphertext: bytes
     top_score: int
     top_title: str
+    cv_blob: bytes = b""
+    cv_ext: str = ""
 
 
 def init_database(path: Path) -> None:
     global _DB_PATH
     _DB_PATH = Path(path)
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         conn.executescript(SCHEMA)
+        _apply_migrations(conn)
         conn.commit()
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, ddl in _MIGRATIONS:
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 def _connect() -> sqlite3.Connection:
@@ -112,6 +154,8 @@ def persist_analysis(
     resume_text: str,
     encryptor: EncryptionService,
     rewrites: list[dict] | None = None,
+    raw_bytes: bytes = b"",
+    ext: str = "",
 ) -> int | None:
     if not resume_text:
         return None
@@ -121,14 +165,16 @@ def persist_analysis(
     payload_json = json.dumps(payload, ensure_ascii=False)
     top_score = analysis.top_role.current_score if analysis.top_role else 0
     top_title = analysis.top_role.title if analysis.top_role else ""
+    cv_blob = encryptor.encrypt_bytes(raw_bytes) if raw_bytes else b""
 
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         cursor = conn.execute(
             """
             INSERT INTO analyses
                 (user_id, created_at, cv_sha256, cv_filename,
-                 cv_ciphertext, payload_json, rewrites_json, top_score, top_title)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cv_ciphertext, payload_json, rewrites_json, top_score, top_title,
+                 cv_blob, cv_ext)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -140,14 +186,87 @@ def persist_analysis(
                 rewrites_json,
                 top_score,
                 top_title,
+                cv_blob,
+                ext,
             ),
         )
         conn.commit()
         return int(cursor.lastrowid)
 
 
+def get_role_rewrites(analysis_id: int, role_index: int) -> list[dict] | None:
+    """Return cached rewrites for a vacancy, or None if never generated."""
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT rewrites_json FROM role_rewrites WHERE analysis_id = ? AND role_index = ?",
+            (analysis_id, role_index),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        return json.loads(row["rewrites_json"])
+    except json.JSONDecodeError:
+        return None
+
+
+def save_role_rewrites(analysis_id: int, role_index: int, rewrites: list[dict]) -> None:
+    with _DB_LOCK, closing(_connect()) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO role_rewrites (analysis_id, role_index, rewrites_json, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (analysis_id, role_index, json.dumps(rewrites, ensure_ascii=False), _utc_now()),
+        )
+        conn.commit()
+
+
+def get_role_edits(analysis_id: int, role_index: int) -> dict[int, dict]:
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT edits_json FROM cv_role_edits WHERE analysis_id = ? AND role_index = ?",
+            (analysis_id, role_index),
+        ).fetchone()
+    if row is None:
+        return {}
+    try:
+        items = json.loads(row["edits_json"])
+    except json.JSONDecodeError:
+        return {}
+    result: dict[int, dict] = {}
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and "index" in item:
+            result[int(item["index"])] = {
+                "accepted": bool(item.get("accepted")),
+                "edited_text": str(item.get("edited_text") or ""),
+            }
+    return result
+
+
+def save_role_edits(analysis_id: int, role_index: int, edits: list[dict]) -> None:
+    with _DB_LOCK, closing(_connect()) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO cv_role_edits (analysis_id, role_index, edits_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (analysis_id, role_index, json.dumps(edits, ensure_ascii=False), _utc_now()),
+        )
+        conn.commit()
+
+
+def update_rewrites(analysis_id: int, rewrites: list[dict]) -> None:
+    """Persist LLM rewrites generated by the lazy /rewrites endpoint."""
+    with _DB_LOCK, closing(_connect()) as conn:
+        conn.execute(
+            "UPDATE analyses SET rewrites_json = ? WHERE id = ?",
+            (json.dumps(rewrites, ensure_ascii=False), analysis_id),
+        )
+        conn.commit()
+
+
 def list_analyses(user_id: str, limit: int = 20) -> list[dict]:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute(
             """
             SELECT id, created_at, cv_filename, top_score, top_title
@@ -162,13 +281,14 @@ def list_analyses(user_id: str, limit: int = 20) -> list[dict]:
 
 
 def get_analysis(analysis_id: int) -> StoredAnalysis | None:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.execute(
             "SELECT * FROM analyses WHERE id = ?",
             (analysis_id,),
         ).fetchone()
     if row is None:
         return None
+    keys = row.keys()
     return StoredAnalysis(
         id=row["id"],
         user_id=row["user_id"],
@@ -180,12 +300,14 @@ def get_analysis(analysis_id: int) -> StoredAnalysis | None:
         cv_ciphertext=row["cv_ciphertext"],
         top_score=row["top_score"],
         top_title=row["top_title"],
+        cv_blob=(row["cv_blob"] if "cv_blob" in keys and row["cv_blob"] else b""),
+        cv_ext=(row["cv_ext"] if "cv_ext" in keys and row["cv_ext"] else ""),
     )
 
 
 def delete_user_data(user_id: str) -> int:
     """Hard-delete every row tied to this user. Required by Rule 14."""
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         deleted = conn.execute("DELETE FROM analyses WHERE user_id = ?", (user_id,)).rowcount
         conn.execute("DELETE FROM applications WHERE user_id = ?", (user_id,))
         conn.commit()
@@ -204,7 +326,7 @@ def create_application(
     if status not in VALID_APPLICATION_STATUSES:
         raise ValueError(f"Invalid application status: {status}")
     now = _utc_now()
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         cursor = conn.execute(
             """
             INSERT INTO applications
@@ -220,7 +342,7 @@ def create_application(
 def update_application_status(application_id: int, status: str, note: str = "") -> None:
     if status not in VALID_APPLICATION_STATUSES:
         raise ValueError(f"Invalid application status: {status}")
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         conn.execute(
             """
             UPDATE applications
@@ -233,7 +355,7 @@ def update_application_status(application_id: int, status: str, note: str = "") 
 
 
 def list_applications(user_id: str) -> list[dict]:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.execute(
             """
             SELECT id, analysis_id, job_url, company, title, status, note, created_at, updated_at
@@ -246,8 +368,44 @@ def list_applications(user_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_cv_edits(analysis_id: int) -> dict[int, dict]:
+    """Return saved per-suggestion edit state, keyed by suggestion index."""
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT edits_json FROM cv_edits WHERE analysis_id = ?",
+            (analysis_id,),
+        ).fetchone()
+    if row is None:
+        return {}
+    try:
+        items = json.loads(row["edits_json"])
+    except json.JSONDecodeError:
+        return {}
+    result: dict[int, dict] = {}
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and "index" in item:
+            result[int(item["index"])] = {
+                "accepted": bool(item.get("accepted")),
+                "edited_text": str(item.get("edited_text") or ""),
+            }
+    return result
+
+
+def save_cv_edits(analysis_id: int, edits: list[dict]) -> None:
+    payload = json.dumps(edits, ensure_ascii=False)
+    with _DB_LOCK, closing(_connect()) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO cv_edits (analysis_id, edits_json, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            (analysis_id, payload, _utc_now()),
+        )
+        conn.commit()
+
+
 def cache_get(cache_key: str) -> dict | None:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.execute(
             "SELECT response_json FROM llm_cache WHERE cache_key = ?",
             (cache_key,),
@@ -261,7 +419,7 @@ def cache_get(cache_key: str) -> dict | None:
 
 
 def cache_put(cache_key: str, response: dict) -> None:
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, closing(_connect()) as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO llm_cache (cache_key, response_json, created_at)

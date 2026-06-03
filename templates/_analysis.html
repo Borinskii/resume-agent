@@ -1,20 +1,18 @@
 {% if not analysis.has_resume and analysis.resume_uploaded %}
   <div class="alert-panel">
     <strong>CV text unavailable</strong>
-    <p>The uploaded file did not produce extractable CV text. If this is a scanned PDF, upload a text-based PDF or paste the CV text.</p>
+    <p>The uploaded file produced no extractable text. If it is a scanned PDF, upload a text-based PDF or a .docx.</p>
   </div>
 {% elif not analysis.has_resume %}
   <div class="alert-panel">
     <strong>No CV evidence found</strong>
-    <p>Upload a PDF or text resume before running the match model.</p>
+    <p>Upload a DOCX, PDF, or text resume to score against the vacancies below.</p>
   </div>
 {% endif %}
 
 {% if analysis.warnings %}
   <div class="warning-list">
-    {% for warning in analysis.warnings %}
-      <p>{{ warning }}</p>
-    {% endfor %}
+    {% for warning in analysis.warnings %}<p>{{ warning }}</p>{% endfor %}
   </div>
 {% endif %}
 
@@ -25,14 +23,14 @@
     <span class="metric-note">{{ analysis.top_role.title if analysis.top_role else "No role" }}</span>
   </article>
   <article class="metric-card">
-    <span class="metric-label">Average current</span>
+    <span class="metric-label">Avg current</span>
     <strong>{{ analysis.average_current }}</strong>
-    <span class="metric-note">Across analyzed targets</span>
+    <span class="metric-note">Across matches</span>
   </article>
   <article class="metric-card">
     <span class="metric-label">After tailoring</span>
     <strong>{{ analysis.average_tailored }}</strong>
-    <span class="metric-note">Source-backed uplift only</span>
+    <span class="metric-note">Source-backed only</span>
   </article>
   <article class="metric-card">
     <span class="metric-label">Confidence</span>
@@ -41,215 +39,95 @@
   </article>
 </div>
 
-{% if analysis_id %}
-<div class="export-strip">
-  <a class="export-link" href="/exports/{{ analysis_id }}/markdown">Download gap report (.md)</a>
-  <a class="export-link" href="/exports/{{ analysis_id }}/docx">Download tailored CV (.docx)</a>
-  {% if llm_enabled and not rewrites %}
-    <span class="export-note">LLM tailoring requested but produced no source-backed rewrites — check FIREWORKS_API_KEY.</span>
-  {% endif %}
-</div>
-{% endif %}
-
-<section class="source-grid" aria-label="Candidate source status">
-  {% for source in analysis.source_statuses %}
-    <article class="source-tile source-{{ source.status|replace('_', '-') }}">
-      <span class="source-name">{{ source.name }}</span>
-      <strong>{{ source.status|replace('_', ' ') }}</strong>
-      <p>{{ source.detail }}</p>
-    </article>
-  {% endfor %}
-</section>
-
-<section class="benchmark-list" aria-label="Job and role scores">
+<section class="vac-list" aria-label="Matched vacancies">
   {% for role in analysis.roles[:10] %}
-    {% set role_id = "role-detail-" ~ loop.index0 %}
-    <article
-      class="role-card role-card-selectable{% if loop.first %} role-card-selected{% endif %}"
-      style="--current: {{ role.current_score }}%; --tailored: {{ role.tailored_score }}%;"
-      tabindex="0"
-      role="button"
-      aria-selected="{{ 'true' if loop.first else 'false' }}"
-      aria-controls="{{ role_id }}"
-      data-role-card="{{ role_id }}"
-    >
-      <div class="role-card-header">
+    {% set fit = role.current_score %}
+    {% set fit_class = "fit-high" if fit >= 60 else ("fit-mid" if fit >= 40 else "fit-low") %}
+    <article class="vac-card">
+      <div class="vac-top">
         <div>
-          <span class="company-type">{{ role.company_type }}</span>
+          <span class="vac-co">{{ role.company or role.company_type }}{% if role.provider %} · {{ role.provider }}{% endif %}</span>
           <h3>{{ role.title }}</h3>
-          {% if role.source_kind == "job" %}
-            <div class="job-meta">
-              {% if role.location %}<span>{{ role.location }}</span>{% endif %}
-              {% if role.provider %}<span>{{ role.provider }}</span>{% endif %}
-              {% if role.updated_at %}<span>{{ role.updated_at }}</span>{% endif %}
-            </div>
-          {% endif %}
-          <p>{{ role.summary }}</p>
+          <div class="vac-meta">
+            {% if role.location %}<span>{{ role.location }}</span>{% endif %}
+            {% if role.updated_at %}<span>{{ role.updated_at[:10] }}</span>{% endif %}
+            <span>{{ role.matched_required }}/{{ role.total_required }} required</span>
+          </div>
         </div>
-        <div class="role-score">
-          <strong>{{ role.current_score }}</strong>
-          <span>now</span>
+        <div class="fit-wrap">
+          <div class="fit-ring {{ fit_class }}" style="--v: {{ fit }};">{{ fit }}</div>
+          <span>fit</span>
         </div>
       </div>
 
-      <div class="benchmark-bar" aria-label="{{ role.title }} current {{ role.current_score }} tailored {{ role.tailored_score }}">
-        <div class="bar-track">
-          <div class="bar-current"></div>
-          <div class="bar-uplift"></div>
-          <div class="bar-marker"></div>
-        </div>
-        <div class="bar-labels">
-          <span>Current {{ role.current_score }}</span>
-          <span>Tailored {{ role.tailored_score }}</span>
-        </div>
-      </div>
-
-      <div class="role-stats">
-        <span>{{ role.matched_required }}/{{ role.total_required }} required</span>
-        <span>{{ role.matched_total }}/{{ role.total_requirements }} total skills</span>
-        <span>Responsibility {{ role.responsibility_score }}</span>
-        <span>Confidence {{ role.confidence_score }}</span>
-      </div>
+      {% if role.tailored_score > role.current_score %}
+        <p class="vac-uplift">Tailoring potential: <b>{{ role.current_score }} → {{ role.tailored_score }}</b> (source-backed only)</p>
+      {% endif %}
 
       {% if role.missing_required %}
-        <div class="gap-line">
-          <span>Required gaps</span>
-          {% for gap in role.missing_required %}
-            <b>{{ gap }}</b>
-          {% endfor %}
+        <div class="vac-gaps">
+          <span>Gaps:</span>
+          {% for gap in role.missing_required[:6] %}<b>{{ gap }}</b>{% endfor %}
         </div>
       {% endif %}
 
-      <div class="job-card-footer">
-        {% if role.url %}
-          <a class="job-link" href="{{ role.url }}" target="_blank" rel="noopener noreferrer">Open role</a>
+      <div class="vac-actions">
+        {% if analysis_id %}
+          <a class="btn btn-teal" href="/editor/{{ analysis_id }}/{{ loop.index0 }}">Tailor resume for this role</a>
         {% endif %}
+        {% if role.url %}<a class="btn" href="{{ role.url }}" target="_blank" rel="noopener noreferrer">Open posting</a>{% endif %}
+        <button type="button" class="btn btn-ghost" data-expand="vac-desc-{{ loop.index0 }}">Details</button>
         {% if analysis_id and role.url %}
-          <form
-            class="queue-form"
-            hx-post="/applications"
-            hx-target="#applications-list"
-            hx-swap="innerHTML"
-            onsubmit="event.stopPropagation()"
-          >
+          <form class="queue-form" hx-post="/applications" hx-target="#applications-list" hx-swap="innerHTML" style="margin-left:auto">
             <input type="hidden" name="analysis_id" value="{{ analysis_id }}">
             <input type="hidden" name="job_url" value="{{ role.url }}">
             <input type="hidden" name="company" value="{{ role.company }}">
             <input type="hidden" name="title" value="{{ role.title }}">
-            <button type="submit" class="queue-btn">Queue for manual apply</button>
+            <button type="submit" class="btn btn-ghost">+ Apply queue</button>
           </form>
         {% endif %}
-        <span class="role-select-state">{{ "Selected" if loop.first else "Tailoring" }}</span>
-        {% if role.tailoring_actions %}
-          <div class="compact-actions">
-            {% for action in role.tailoring_actions[:2] %}
-              <span>{{ action.title }}</span>
-            {% endfor %}
-          </div>
-        {% endif %}
+      </div>
+
+      <div id="vac-desc-{{ loop.index0 }}" class="vac-desc" hidden>
+        <p>{{ role.summary }}</p>
+        <div class="req-chips">
+          {% for item in role.requirement_matches[:14] %}
+            <span class="req-chip {{ 'req-chip-have' if item.evidence_level > 0 else 'req-chip-miss' }}">{{ item.name }}</span>
+          {% endfor %}
+        </div>
       </div>
     </article>
   {% endfor %}
-</section>
 
-{% for role in analysis.roles[:10] %}
-  {% set role_id = "role-detail-" ~ loop.index0 %}
-  <section
-    id="{{ role_id }}"
-    class="detail-grid role-detail-panel"
-    data-role-detail="{{ role_id }}"
-    {% if not loop.first %}hidden{% endif %}
-  >
-    <article class="detail-panel">
-      <div class="detail-heading">
-        <span class="eyebrow">Selected vacancy</span>
-        <h3>Evidence matrix</h3>
-        <p class="detail-subtitle">{{ role.company_type }} · {{ role.title }}</p>
-      </div>
-      <div class="evidence-table">
-        {% for item in role.requirement_matches %}
-          <div class="evidence-row evidence-{{ item.status }}">
-            <span>{{ item.name }}</span>
-            <b>{{ item.importance }}</b>
-            <em>Level {{ item.evidence_level }}</em>
-            <p>{{ item.quote if item.quote else "NOT FOUND in candidate evidence" }}</p>
-          </div>
-        {% endfor %}
-      </div>
-    </article>
-
-    <article class="detail-panel">
-      <div class="detail-heading">
-        <span class="eyebrow">CV actions</span>
-        <h3>Recommended CV edits</h3>
-        <p class="detail-subtitle">Only source-backed changes for this vacancy.</p>
-      </div>
-      <div class="action-list">
-        {% for action in role.tailoring_actions %}
-          <div class="action-item action-{{ action.kind }}">
-            <strong>{{ action.title }}</strong>
-            <p>{{ action.detail }}</p>
-            {% if action.source_quote %}
-              <blockquote>{{ action.source_quote }}</blockquote>
-            {% endif %}
-          </div>
-        {% endfor %}
-        {% if not role.tailoring_actions %}
-          <p class="muted-copy">No resume edits were recommended from the current evidence.</p>
-        {% endif %}
-      </div>
-    </article>
-  </section>
-{% endfor %}
-
-{% if rewrites %}
-<section class="rewrites-section">
-  <h3>Source-backed bullet rewrites</h3>
-  <p class="muted-copy">Generated by the active LLM provider. Source quote is kept next to each rewrite — review before using.</p>
-  <div class="rewrites-list">
-    {% for item in rewrites %}
-      <article class="rewrite-card {% if item.is_gap %}rewrite-gap{% endif %}">
-        <div class="rewrite-head">
-          <strong>{{ item.skill_name }}</strong>
-          <span>{{ item.role_title }}{% if item.provider %} · {{ item.provider }}{% endif %}</span>
-        </div>
-        <p class="rewrite-original"><b>Source:</b> {{ item.original_bullet }}</p>
-        {% if item.is_gap %}
-          <p class="rewrite-warning"><b>Gap:</b> {{ item.note }}</p>
-        {% else %}
-          <p class="rewrite-new"><b>Rewrite:</b> {{ item.rewritten_bullet }}</p>
-        {% endif %}
-      </article>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-<section class="profile-grid">
-  <article class="detail-panel">
-    <div class="detail-heading">
-      <span class="eyebrow">Detected skills</span>
-      <h3>Candidate inventory</h3>
+  {% if not analysis.roles %}
+    <div class="alert-panel">
+      <strong>No vacancies matched</strong>
+      <p>Try a clearer role title in the target field (for example "Backend Python Engineer" or "Data Analyst").</p>
     </div>
+  {% endif %}
+</section>
+
+<details class="collapse-block" style="margin-top:16px">
+  <summary>Candidate sources &amp; parsed CV</summary>
+  <div class="collapse-body">
+    <section class="source-grid" aria-label="Candidate source status">
+      {% for source in analysis.source_statuses %}
+        <article class="source-tile source-{{ source.status|replace('_', '-') }}">
+          <span class="source-name">{{ source.name }}</span>
+          <strong>{{ source.status|replace('_', ' ') }}</strong>
+          <p>{{ source.detail }}</p>
+        </article>
+      {% endfor %}
+    </section>
+
     {% if analysis.skill_inventory %}
+      <h3 style="font-size:.9rem;margin:16px 0 8px">Detected skills</h3>
       <div class="skill-cloud">
-        {% for skill in analysis.skill_inventory %}
-          <span>{{ skill }}</span>
-        {% endfor %}
+        {% for skill in analysis.skill_inventory %}<span>{{ skill }}</span>{% endfor %}
       </div>
-    {% else %}
-      <p class="muted-copy">No normalized skills detected yet.</p>
     {% endif %}
-  </article>
 
-  <article class="detail-panel">
-    <div class="detail-heading">
-      <span class="eyebrow">Parsed CV</span>
-      <h3>Review preview</h3>
-    </div>
-    <pre
-      class="parsed-preview"
-      data-skills="{{ analysis.skill_inventory|join('|') }}"
-    >{{ analysis.parsed_preview if analysis.parsed_preview else "No parsed text available." }}</pre>
-  </article>
-</section>
+    <h3 style="font-size:.9rem;margin:16px 0 0">Parsed CV (review before trusting)</h3>
+    <pre class="parsed-preview" data-skills="{{ analysis.skill_inventory|join('|') }}">{{ analysis.parsed_preview if analysis.parsed_preview else "No parsed text available." }}</pre>
+  </div>
+</details>

@@ -28,6 +28,12 @@ class ParsedResume:
     text: str
     filename: str
     warnings: list[str]
+    raw_bytes: bytes = b""
+    ext: str = ""
+
+    @property
+    def is_docx(self) -> bool:
+        return self.ext == "docx"
 
 
 async def parse_resume_upload(upload: UploadFile | None) -> ParsedResume:
@@ -47,13 +53,17 @@ async def parse_resume_upload(upload: UploadFile | None) -> ParsedResume:
             text=_decode_text(content),
             filename=filename,
             warnings=[],
+            raw_bytes=content,
+            ext=suffix,
         )
 
     if suffix == "pdf":
-        return _parse_pdf(content, filename)
+        parsed = _parse_pdf(content, filename)
+        return ParsedResume(parsed.text, parsed.filename, parsed.warnings, raw_bytes=content, ext="pdf")
 
     if suffix == "docx":
-        return _parse_docx(content, filename)
+        parsed = _parse_docx(content, filename)
+        return ParsedResume(parsed.text, parsed.filename, parsed.warnings, raw_bytes=content, ext="docx")
 
     if suffix and suffix not in SUPPORTED_EXTENSIONS:
         raise UnsupportedUpload(suffix)
@@ -64,6 +74,8 @@ async def parse_resume_upload(upload: UploadFile | None) -> ParsedResume:
         warnings=[
             f"No file extension detected. Treated '{filename}' as plain text.",
         ],
+        raw_bytes=content,
+        ext=suffix,
     )
 
 

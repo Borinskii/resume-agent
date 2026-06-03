@@ -4,10 +4,9 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
 
-from app.services.llm_client import LLMClient, build_llm_client
-from app.services.matching import AnalysisResult, RoleResult
+from app.services.llm_client import build_llm_client
+from app.services.matching import AnalysisResult
 from app.services.storage import cache_get, cache_put
 
 log = logging.getLogger(__name__)
@@ -39,8 +38,48 @@ def generate_tailored_rewrites(
     resume_text: str,
     max_rewrites: int = 5,
 ) -> list[dict]:
-    """Generate at most `max_rewrites` source-backed bullet rewrites."""
-    if not resume_text or not analysis.top_role:
+    """Rewrites for the top role of a live AnalysisResult."""
+    if not analysis.top_role:
+        return []
+    top = analysis.top_role
+    actions = [
+        (action.kind, action.title, action.source_quote)
+        for action in top.tailoring_actions
+    ]
+    return _generate(top.title, top.url, actions, resume_text, max_rewrites)
+
+
+def generate_rewrites_for_top_role(
+    top_role: dict,
+    resume_text: str,
+    max_rewrites: int = 5,
+) -> list[dict]:
+    """Rewrites for a top role stored as a plain dict (from the DB payload).
+
+    This is what the lazy /analyze/{id}/rewrites endpoint uses, so the slow LLM
+    work runs in a second request instead of blocking the main analysis.
+    """
+    actions = [
+        (a.get("kind", ""), a.get("title", ""), a.get("source_quote", ""))
+        for a in top_role.get("tailoring_actions", [])
+    ]
+    return _generate(
+        top_role.get("title", ""),
+        top_role.get("url", ""),
+        actions,
+        resume_text,
+        max_rewrites,
+    )
+
+
+def _generate(
+    role_title: str,
+    role_url: str,
+    actions: list[tuple[str, str, str]],
+    resume_text: str,
+    max_rewrites: int,
+) -> list[dict]:
+    if not resume_text:
         return []
 
     client = build_llm_client()
@@ -53,43 +92,42 @@ def generate_tailored_rewrites(
         return []
 
     rewrites: list[TailoredRewrite] = []
-    target = analysis.top_role
-
-    for action in target.tailoring_actions:
-        if action.kind != "highlight":
+    for kind, action_title, source_quote in actions:
+        if kind != "highlight":
             continue
         if len(rewrites) >= max_rewrites:
             break
 
-        anchor_quote = action.source_quote
-        bullet = _pick_bullet_for_quote(bullets, anchor_quote) or anchor_quote
+        bullet = _pick_bullet_for_quote(bullets, source_quote) or source_quote
         if not bullet:
             continue
 
-        skill_name = _extract_skill_from_title(action.title)
-        cache_key = _cache_key(client.provider, bullet, target.title, skill_name)
+        skill_name = _extract_skill_from_title(action_title)
+        cache_key = _cache_key(client.provider, bullet, role_title, skill_name)
 
         cached = cache_get(cache_key)
         if cached is not None:
-            rewrites.append(_from_cache(cached, target, skill_name, bullet, client.provider))
+            rewrites.append(_from_cache(cached, role_title, role_url, skill_name, bullet, client.provider))
             continue
 
         try:
-            llm_text = client.complete(SYSTEM_PROMPT, _user_prompt(bullet, target, skill_name))
+            llm_text = client.complete(SYSTEM_PROMPT, _user_prompt(bullet, role_title, skill_name))
         except Exception as exc:  # noqa: BLE001 - surface integration failures clearly.
             log.warning("LLM (%s) rewrite failed: %s", client.provider, exc)
             continue
 
-        rewrite = _build_rewrite(llm_text, target, skill_name, bullet, client.provider)
-        cache_put(cache_key, _to_cache(rewrite))
+        rewrite = _build_rewrite(llm_text, role_title, role_url, skill_name, bullet, client.provider)
+        # Only cache non-empty results so a one-off blank answer is not memoized.
+        if rewrite.rewritten_bullet or rewrite.is_gap:
+            cache_put(cache_key, _to_cache(rewrite))
         rewrites.append(rewrite)
 
-    return [_to_dict(item) for item in rewrites]
+    return [_to_dict(item) for item in rewrites if item.rewritten_bullet or item.is_gap]
 
 
-def _user_prompt(bullet: str, target: RoleResult, skill_name: str) -> str:
+def _user_prompt(bullet: str, role_title: str, skill_name: str) -> str:
     return (
-        f"Target role: {target.title}\n"
+        f"Target role: {role_title}\n"
         f"Skill to make more visible (without inventing facts): {skill_name}\n"
         f"Source bullet from the candidate CV:\n\"{bullet}\"\n\n"
         "Rewrite this single bullet so it surfaces the target skill, keeping the same facts. "
@@ -99,7 +137,8 @@ def _user_prompt(bullet: str, target: RoleResult, skill_name: str) -> str:
 
 def _build_rewrite(
     llm_text: str,
-    target: RoleResult,
+    role_title: str,
+    role_url: str,
     skill_name: str,
     bullet: str,
     provider: str,
@@ -108,8 +147,8 @@ def _build_rewrite(
     rewritten = "" if is_gap else _clean_bullet(llm_text)
     note = llm_text[4:].strip() if is_gap else ""
     return TailoredRewrite(
-        role_title=target.title,
-        role_url=target.url,
+        role_title=role_title,
+        role_url=role_url,
         skill_name=skill_name,
         original_bullet=bullet,
         rewritten_bullet=rewritten,
@@ -121,9 +160,7 @@ def _build_rewrite(
 
 def _clean_bullet(text: str) -> str:
     line = text.strip()
-    # Drop common preambles emitted by chatty local models.
     line = re.sub(r"^(here(?:'s| is)|rewritten bullet|rewrite):\s*", "", line, flags=re.IGNORECASE)
-    # Take just the first non-empty line; bullet-style output should be one line.
     for candidate in line.splitlines():
         candidate = candidate.strip()
         if candidate:
@@ -178,14 +215,15 @@ def _to_cache(rewrite: TailoredRewrite) -> dict:
 
 def _from_cache(
     cached: dict,
-    target: RoleResult,
+    role_title: str,
+    role_url: str,
     skill_name: str,
     bullet: str,
     provider: str,
 ) -> TailoredRewrite:
     return TailoredRewrite(
-        role_title=target.title,
-        role_url=target.url,
+        role_title=role_title,
+        role_url=role_url,
         skill_name=skill_name,
         original_bullet=bullet,
         rewritten_bullet=cached.get("rewritten_bullet", ""),

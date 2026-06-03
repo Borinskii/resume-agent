@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tailor resume — {{ view.vacancy_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v=selection-4">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+    <script src="{{ url_for('static', path='js/app.js') }}?v=selection-4" defer></script>
+  </head>
+  <body>
+    <div class="editor-shell">
+      <header class="editor-topbar">
+        <a class="editor-back" href="/">&larr; Vacancies</a>
+        <div class="editor-vac">
+          <span class="vac-co">{{ view.vacancy_company }}{% if view.vacancy_provider %} · {{ view.vacancy_provider }}{% endif %}{% if view.vacancy_location %} · {{ view.vacancy_location }}{% endif %}</span>
+          <h1>{{ view.vacancy_title }}</h1>
+        </div>
+        <div class="editor-fit">
+          <span class="fit-pill">
+            <span class="from">{{ view.current_score }}</span>
+            <span class="arrow">&rarr;</span>
+            <span class="to">{{ view.tailored_score }}</span>
+            <small>fit</small>
+          </span>
+          {% if view.vacancy_url %}<a class="btn" href="{{ view.vacancy_url }}" target="_blank" rel="noopener noreferrer">Open posting</a>{% endif %}
+        </div>
+      </header>
+
+      <div id="error-banner" class="error-banner" hidden role="alert"></div>
+
+      <div class="format-banner {{ 'format-ok' if view.format_preserved else 'format-warn' }}">
+        {{ view.format_note }}
+      </div>
+
+      <main class="editor-grid">
+        <section class="doc-pane" aria-label="Resume document">
+          <div class="doc-toolbar">
+            <span class="doc-name">{{ view.cv_filename or "Resume" }}</span>
+            <div class="downloads">
+              <a class="export-link" href="/editor/{{ view.analysis_id }}/{{ view.role_index }}/download?fmt=docx">Download {{ '.docx (formatted)' if view.format_preserved else '.docx' }}</a>
+              <a class="export-link export-link-sm" href="/editor/{{ view.analysis_id }}/{{ view.role_index }}/download?fmt=md">.md</a>
+              <a class="export-link export-link-sm" href="/editor/{{ view.analysis_id }}/{{ view.role_index }}/download?fmt=txt">.txt</a>
+            </div>
+          </div>
+          <div id="doc-preview">
+            {% include "_editor_preview.html" %}
+          </div>
+        </section>
+
+        <aside class="suggest-pane" aria-label="Suggestions">
+          <div class="suggest-head">
+            <h2>Suggestions for this role</h2>
+            <p>Each card rephrases a real bullet from your CV to surface a skill this vacancy wants. Tick "Apply" and the document updates. Edit any wording first — nothing is invented.</p>
+          </div>
+
+          <div id="suggestions"
+               {% if auto_generate %}hx-post="/editor/{{ view.analysis_id }}/{{ view.role_index }}/rewrites" hx-trigger="load" hx-swap="innerHTML"{% endif %}>
+            {% if auto_generate %}
+              <div class="sg-loading"><span class="spinner spinner-dark" aria-hidden="true"></span> Generating source-backed suggestions with the local model… up to a minute on CPU.</div>
+            {% else %}
+              {% include "_editor_suggestions.html" %}
+            {% endif %}
+          </div>
+
+          <details class="req-block">
+            <summary>What the role asks for ({{ view.requirements|length }})</summary>
+            <div class="req-body">
+              {% for req in view.requirements %}
+                <div class="req-row req-{{ req.status }}">
+                  <div class="req-row-head">
+                    <strong>{{ req.name }}</strong>
+                    <span class="req-imp">{{ req.importance|replace('_', ' ') }}</span>
+                  </div>
+                  <div class="req-ev">evidence level {{ req.evidence_level }} · {{ req.status }}</div>
+                  {% if req.quote %}<p class="req-quote">{{ req.quote }}</p>{% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          </details>
+
+          {% if view.gaps %}
+            <details class="req-block">
+              <summary>Gaps — not added to your CV ({{ view.gaps|length }})</summary>
+              <div class="req-body">
+                {% for gap in view.gaps %}
+                  <div class="gap-card">
+                    <strong>{{ gap.skill_name }}</strong><span class="req-imp">{{ gap.importance|replace('_', ' ') }}</span>
+                    <p>{{ gap.why_not }}</p>
+                  </div>
+                {% endfor %}
+              </div>
+            </details>
+          {% endif %}
+        </aside>
+      </main>
+    </div>
+  </body>
+</html>

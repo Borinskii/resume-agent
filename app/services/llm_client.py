@@ -21,7 +21,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
+DEFAULT_OLLAMA_MODEL = "qwen3.5:4b"
 DEFAULT_FIREWORKS_MODEL = "accounts/fireworks/models/deepseek-v3p1"
 FIREWORKS_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
 
@@ -83,13 +83,16 @@ class OllamaClient:
         payload = {
             "model": self._model,
             "stream": False,
-            "options": {"temperature": 0.3, "num_predict": 220},
+            # Disable chain-of-thought: thinking models (qwen3.x, gemma4, ...) otherwise
+            # spend the whole token budget reasoning and return empty `content`.
+            "think": False,
+            "options": {"temperature": 0.3, "num_predict": 300},
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         }
-        with httpx.Client(timeout=90) as client:
+        with httpx.Client(timeout=120) as client:
             response = client.post(f"{self._base_url}/api/chat", json=payload)
             response.raise_for_status()
             data = response.json()

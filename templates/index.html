@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CV-Job Match Agent</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v=selection-2">
+    <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v=selection-4">
     <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
-    <script src="{{ url_for('static', path='js/app.js') }}?v=selection-2" defer></script>
+    <script src="{{ url_for('static', path='js/app.js') }}?v=selection-4" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -18,12 +18,8 @@
         <div class="topbar-actions" aria-label="System status">
           <span class="policy-chip">Auto-apply off</span>
           <span class="policy-chip policy-chip-safe">LinkedIn scraping disabled</span>
-          <button
-            type="button"
-            class="policy-chip policy-chip-danger"
-            data-delete-account
-            title="Hard-delete every analysis tied to this session"
-          >Delete my data</button>
+          <button type="button" class="policy-chip policy-chip-danger" data-delete-account
+                  title="Hard-delete every analysis tied to this session">Delete my data</button>
         </div>
       </header>
 
@@ -36,32 +32,22 @@
             <h2 id="source-title">Candidate profile</h2>
           </div>
 
-          <form
-            class="analysis-form"
-            method="post"
-            action="/analyze"
-            enctype="multipart/form-data"
-            hx-post="/analyze"
-            hx-target="#analysis-results"
-            hx-swap="innerHTML"
-            hx-indicator="#submit-spinner"
-            hx-encoding="multipart/form-data"
-            data-analysis-form
-          >
+          <form class="analysis-form" method="post" action="/analyze" enctype="multipart/form-data"
+                hx-post="/analyze" hx-target="#analysis-results" hx-swap="innerHTML"
+                hx-indicator="#submit-spinner" hx-encoding="multipart/form-data" data-analysis-form>
             <label class="field-label" for="resume">CV / Resume</label>
             <label class="file-drop" for="resume" data-file-drop>
-              <span class="file-drop-title">Drop PDF, DOCX, TXT or MD — or click to select</span>
+              <span class="file-drop-title">Drop DOCX (best), PDF, TXT or MD — or click</span>
               <span class="file-drop-name" data-file-name>No file selected</span>
               <input id="resume" name="resume" type="file" accept=".pdf,.txt,.md,.docx">
             </label>
+            <p class="muted-copy" style="font-size:.78rem;margin:-4px 0 0">
+              Upload <b>.docx</b> to keep your formatting when you tailor a resume. PDF works for scoring but exports as plain text.
+            </p>
 
-            <label class="field-label" for="target_text">Target job text or URLs</label>
-            <textarea
-              id="target_text"
-              name="target_text"
-              rows="7"
-              placeholder="Paste a job description, or add one URL per line."
-            ></textarea>
+            <label class="field-label" for="target_text">Target role or job text</label>
+            <textarea id="target_text" name="target_text" rows="5"
+                      placeholder="A role title like &quot;ML Engineer&quot; drives the vacancy search. You can also paste a full job description or ATS URLs."></textarea>
 
             <div class="two-field-grid">
               <div>
@@ -74,24 +60,19 @@
               </div>
             </div>
 
-            <label class="field-label" for="linkedin_text">LinkedIn profile text</label>
-            <textarea
-              id="linkedin_text"
-              name="linkedin_text"
-              rows="5"
-              placeholder="Optional manual paste or export text. URLs are not scraped."
-            ></textarea>
-
-            <label class="llm-toggle">
-              <input type="checkbox" name="use_llm" value="on">
-              <span>Generate source-backed bullet rewrites with a local Ollama model (preferred) or Fireworks. Provider is picked per <code>LLM_PROVIDER</code> in <code>.env</code>.</span>
-            </label>
+            <details class="collapse-block">
+              <summary>Optional: paste LinkedIn profile text</summary>
+              <div class="collapse-body">
+                <textarea id="linkedin_text" name="linkedin_text" rows="4"
+                          placeholder="Manual paste or export text. URLs are never scraped."></textarea>
+              </div>
+            </details>
 
             <button class="primary-action" type="submit">
-              <span class="primary-action-label">Analyze fit</span>
+              <span class="primary-action-label">Find matching vacancies</span>
               <span class="primary-action-spinner" id="submit-spinner" aria-live="polite">
                 <span class="spinner" aria-hidden="true"></span>
-                <span>Analyzing… this can take up to 15 seconds.</span>
+                <span>Matching against live vacancies… ~10-20s</span>
               </span>
             </button>
           </form>
@@ -106,8 +87,7 @@
                   <span>{{ item.top_title or "No top role" }}</span>
                   <em>{{ item.created_at[:16].replace('T', ' ') }}</em>
                   <div class="history-actions">
-                    <a href="/exports/{{ item.id }}/markdown">md</a>
-                    <a href="/exports/{{ item.id }}/docx">docx</a>
+                    <a href="/exports/{{ item.id }}/markdown">report</a>
                   </div>
                 </li>
               {% endfor %}
@@ -119,8 +99,8 @@
         <section class="results-panel" aria-live="polite" aria-labelledby="analysis-title">
           <div class="panel-heading results-heading">
             <div>
-              <p class="eyebrow">Benchmarks</p>
-              <h2 id="analysis-title">Role readiness</h2>
+              <p class="eyebrow">Live vacancies</p>
+              <h2 id="analysis-title">Matches &amp; fit</h2>
             </div>
             <span class="score-method">Deterministic scoring</span>
           </div>

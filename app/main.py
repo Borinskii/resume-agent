@@ -19,7 +19,6 @@ from app.services.job_search import discover_safe_jobs
 from app.services.linkedin_cleaner import clean_linkedin_profile_text
 from app.services.matching import analyze_resume
 from app.services.parsing import (
-    MAX_UPLOAD_BYTES,
     SUPPORTED_EXTENSIONS,
     UnsupportedUpload,
     UploadTooLarge,
@@ -27,17 +26,28 @@ from app.services.parsing import (
 )
 from app.services.target_jobs import resolve_target_input
 from app.services.rate_limit import RateLimiter
-from app.services.session import attach_session, get_session, install_session_middleware
+from app.services.session import attach_session, install_session_middleware
 from app.services.storage import (
     DEFAULT_DB_PATH,
+    get_analysis,
+    get_role_edits,
+    get_role_rewrites,
     init_database,
     list_analyses,
     persist_analysis,
+    save_role_edits,
+    save_role_rewrites,
 )
-from app.services.tailoring import generate_tailored_rewrites
-from app.services.exporters import analysis_to_markdown, tailored_cv_to_docx
+from app.services.tailoring import generate_rewrites_for_top_role
+from app.services.exporters import analysis_to_markdown
 from app.services.encryption import EncryptionService
 from app.services.llm_client import describe_llm_status
+from app.services.editor import (
+    build_editor_view,
+    edited_resume_docx,
+    edited_resume_markdown,
+    edited_resume_text,
+)
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -58,7 +68,6 @@ analyze_limiter = RateLimiter(max_requests=12, window_seconds=60)
 
 @app.get("/healthz", response_class=JSONResponse)
 async def healthz() -> JSONResponse:
-    """Cheap liveness probe. Does not touch external systems."""
     return JSONResponse({"status": "ok"})
 
 
@@ -68,11 +77,7 @@ async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "index.html",
-        {
-            "analysis": None,
-            "history": list_analyses(session["user_id"], limit=20),
-            "session": session,
-        },
+        {"analysis": None, "history": list_analyses(session["user_id"], limit=20), "session": session},
     )
 
 
@@ -84,27 +89,19 @@ async def analyze(
     github_url: Annotated[str, Form()] = "",
     linkedin_url: Annotated[str, Form()] = "",
     linkedin_text: Annotated[str, Form()] = "",
-    use_llm: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     session = attach_session(request)
 
     client_ip = request.client.host if request.client else "anonymous"
-    rate_key = f"analyze:{session['user_id']}:{client_ip}"
-    if not analyze_limiter.allow(rate_key):
+    if not analyze_limiter.allow(f"analyze:{session['user_id']}:{client_ip}"):
         raise HTTPException(status_code=429, detail="Too many analyses. Wait a minute and retry.")
 
     try:
         parsed_resume = await parse_resume_upload(resume)
     except UploadTooLarge as exc:
-        raise HTTPException(
-            status_code=413,
-            detail=f"CV upload is {exc.size:,} bytes; limit is {exc.limit:,} bytes.",
-        ) from exc
+        raise HTTPException(status_code=413, detail=f"CV upload is {exc.size:,} bytes; limit is {exc.limit:,} bytes.") from exc
     except UnsupportedUpload as exc:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Unsupported extension '.{exc.suffix}'. Supported: {sorted(SUPPORTED_EXTENSIONS)}.",
-        ) from exc
+        raise HTTPException(status_code=415, detail=f"Unsupported extension '.{exc.suffix}'. Supported: {sorted(SUPPORTED_EXTENSIONS)}.") from exc
 
     target_resolution = resolve_target_input(target_text)
     job_discovery = discover_safe_jobs(target_text)
@@ -113,7 +110,6 @@ async def analyze(
     github_username = parse_github_username(github_url)
     github_evidence = fetch_github_evidence(github_username) if github_username else None
 
-    llm_enabled = use_llm.lower() in {"on", "true", "1", "yes"}
     llm_status = describe_llm_status()
     llm_tile = (f"LLM ({llm_status.provider})", llm_status.status, llm_status.detail)
 
@@ -127,18 +123,11 @@ async def analyze(
         resume_filename=parsed_resume.filename,
         parse_warnings=[*parsed_resume.warnings, *target_resolution.warnings, *job_discovery.warnings],
         target_statuses=[
-            *[(status.name, status.status, status.detail)
-              for status in [*target_resolution.statuses, *job_discovery.statuses]],
+            *[(s.name, s.status, s.detail) for s in [*target_resolution.statuses, *job_discovery.statuses]],
             llm_tile,
         ],
         linkedin_cleaning_detail=cleaned_linkedin.status_detail if linkedin_text.strip() else "",
         job_postings=job_discovery.jobs,
-    )
-
-    rewrites = (
-        generate_tailored_rewrites(analysis, parsed_resume.text)
-        if llm_enabled and parsed_resume.text
-        else []
     )
 
     persisted_id = persist_analysis(
@@ -146,7 +135,9 @@ async def analyze(
         analysis=analysis,
         resume_text=parsed_resume.text,
         encryptor=encryption,
-        rewrites=rewrites,
+        rewrites=[],
+        raw_bytes=parsed_resume.raw_bytes,
+        ext=parsed_resume.ext,
     )
 
     return templates.TemplateResponse(
@@ -154,13 +145,97 @@ async def analyze(
         "_analysis.html",
         {
             "analysis": analysis,
-            "rewrites": rewrites,
             "analysis_id": persisted_id,
-            "llm_enabled": llm_enabled,
+            "source_ext": parsed_resume.ext,
             "session": session,
         },
     )
 
+
+# --- Per-vacancy resume editor ---------------------------------------------
+
+@app.get("/editor/{analysis_id}/{role_index}", response_class=HTMLResponse)
+async def resume_editor(request: Request, analysis_id: int, role_index: int) -> HTMLResponse:
+    session = attach_session(request)
+    record = _load_owned_analysis(session, analysis_id)
+    rewrites = get_role_rewrites(analysis_id, role_index)  # None if never generated
+    view = build_editor_view(record, encryption, role_index, get_role_edits(analysis_id, role_index), rewrites)
+    return templates.TemplateResponse(
+        request,
+        "editor.html",
+        {"view": view, "auto_generate": rewrites is None, "session": session},
+    )
+
+
+@app.post("/editor/{analysis_id}/{role_index}/rewrites", response_class=HTMLResponse)
+async def editor_rewrites(request: Request, analysis_id: int, role_index: int) -> HTMLResponse:
+    session = attach_session(request)
+    record = _load_owned_analysis(session, analysis_id)
+    roles = record.payload.get("roles") or []
+    if not roles or role_index >= len(roles):
+        raise HTTPException(status_code=404, detail="Vacancy not found.")
+
+    try:
+        cv_text = encryption.decrypt(record.cv_ciphertext)
+    except Exception:  # noqa: BLE001
+        cv_text = ""
+
+    rewrites = generate_rewrites_for_top_role(roles[role_index], cv_text) if cv_text else []
+    save_role_rewrites(analysis_id, role_index, rewrites)
+    view = build_editor_view(record, encryption, role_index, get_role_edits(analysis_id, role_index), rewrites)
+    return templates.TemplateResponse(request, "_editor_suggestions.html", {"view": view})
+
+
+@app.post("/editor/{analysis_id}/{role_index}/apply", response_class=HTMLResponse)
+async def editor_apply(request: Request, analysis_id: int, role_index: int) -> HTMLResponse:
+    session = attach_session(request)
+    record = _load_owned_analysis(session, analysis_id)
+    rewrites = get_role_rewrites(analysis_id, role_index) or []
+
+    form = await request.form()
+    edits: list[dict] = []
+    for index, rw in enumerate(rewrites):
+        if rw.get("is_gap"):
+            continue
+        edits.append({
+            "index": index,
+            "accepted": form.get(f"accept_{index}") is not None,
+            "edited_text": str(form.get(f"text_{index}") or "").strip(),
+        })
+    save_role_edits(analysis_id, role_index, edits)
+
+    view = build_editor_view(record, encryption, role_index, get_role_edits(analysis_id, role_index), rewrites)
+    return templates.TemplateResponse(request, "_editor_preview.html", {"view": view})
+
+
+@app.get("/editor/{analysis_id}/{role_index}/download")
+async def editor_download(request: Request, analysis_id: int, role_index: int, fmt: str = "docx") -> Response:
+    session = attach_session(request)
+    record = _load_owned_analysis(session, analysis_id)
+    rewrites = get_role_rewrites(analysis_id, role_index) or []
+    view = build_editor_view(record, encryption, role_index, get_role_edits(analysis_id, role_index), rewrites)
+
+    fmt = fmt.lower()
+    base = f"tailored-resume-{analysis_id}-{role_index}"
+    if fmt == "md":
+        return PlainTextResponse(
+            edited_resume_markdown(view),
+            headers={"Content-Disposition": f'attachment; filename="{base}.md"', "Content-Type": "text/markdown; charset=utf-8"},
+        )
+    if fmt == "txt":
+        return PlainTextResponse(
+            edited_resume_text(view),
+            headers={"Content-Disposition": f'attachment; filename="{base}.txt"', "Content-Type": "text/plain; charset=utf-8"},
+        )
+    payload = edited_resume_docx(view, record, encryption)
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{base}.docx"'},
+    )
+
+
+# --- Apply queue ------------------------------------------------------------
 
 @app.post("/applications", response_class=HTMLResponse)
 async def queue_application(
@@ -183,11 +258,7 @@ async def queue_application(
         status="manual_confirmation_required",
         note="Created via dashboard. Auto-apply remains off.",
     )
-    return templates.TemplateResponse(
-        request,
-        "_applications.html",
-        {"applications": list_applications(session["user_id"])},
-    )
+    return templates.TemplateResponse(request, "_applications.html", {"applications": list_applications(session["user_id"])})
 
 
 @app.post("/applications/{application_id}/status", response_class=HTMLResponse)
@@ -202,13 +273,8 @@ async def update_application(
     session = attach_session(request)
     if status not in VALID_APPLICATION_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status.")
-
     update_application_status(application_id, status, note.strip())
-    return templates.TemplateResponse(
-        request,
-        "_applications.html",
-        {"applications": list_applications(session["user_id"])},
-    )
+    return templates.TemplateResponse(request, "_applications.html", {"applications": list_applications(session["user_id"])})
 
 
 @app.get("/applications", response_class=HTMLResponse)
@@ -216,19 +282,11 @@ async def get_applications(request: Request) -> HTMLResponse:
     from app.services.storage import list_applications
 
     session = attach_session(request)
-    return templates.TemplateResponse(
-        request,
-        "_applications.html",
-        {"applications": list_applications(session["user_id"])},
-    )
+    return templates.TemplateResponse(request, "_applications.html", {"applications": list_applications(session["user_id"])})
 
 
 @app.post("/account/delete", response_class=JSONResponse)
 async def delete_account(request: Request) -> JSONResponse:
-    """Hard-delete every analysis + application tied to this session.
-
-    Required by Rule 14: right-to-delete must physically remove rows.
-    """
     from app.services.storage import delete_user_data
 
     session = attach_session(request)
@@ -241,9 +299,8 @@ async def delete_account(request: Request) -> JSONResponse:
 async def export_markdown(request: Request, analysis_id: int) -> PlainTextResponse:
     session = attach_session(request)
     record = _load_owned_analysis(session, analysis_id)
-    text = analysis_to_markdown(record)
     return PlainTextResponse(
-        text,
+        analysis_to_markdown(record),
         headers={
             "Content-Disposition": f'attachment; filename="cv-gap-report-{analysis_id}.md"',
             "Content-Type": "text/markdown; charset=utf-8",
@@ -251,23 +308,7 @@ async def export_markdown(request: Request, analysis_id: int) -> PlainTextRespon
     )
 
 
-@app.get("/exports/{analysis_id}/docx")
-async def export_docx(request: Request, analysis_id: int) -> Response:
-    session = attach_session(request)
-    record = _load_owned_analysis(session, analysis_id)
-    payload = tailored_cv_to_docx(record, encryption)
-    return Response(
-        content=payload,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={
-            "Content-Disposition": f'attachment; filename="tailored-cv-{analysis_id}.docx"',
-        },
-    )
-
-
 def _load_owned_analysis(session: dict, analysis_id: int):
-    from app.services.storage import get_analysis  # local to avoid cycles
-
     record = get_analysis(analysis_id)
     owner = session.get("user_id") if isinstance(session, dict) else None
     if record is None or not owner or record.user_id != owner:

@@ -1,0 +1,32 @@
+{% if view.suggestions %}
+  <form class="sg-list"
+        hx-post="/editor/{{ view.analysis_id }}/{{ view.role_index }}/apply"
+        hx-target="#doc-preview" hx-swap="innerHTML"
+        hx-trigger="change delay:250ms">
+    {% for s in view.suggestions %}
+      <article class="sg-card{% if s.accepted %} is-accepted{% endif %}">
+        <div class="sg-head">
+          <label class="sg-accept">
+            <input type="checkbox" name="accept_{{ s.index }}" {% if s.accepted %}checked{% endif %}>
+            <span>{{ s.skill_name }}</span>
+          </label>
+          {% if s.provider %}<span class="sg-provider">{{ s.provider }}</span>{% endif %}
+        </div>
+        <p class="sg-orig"><b>Your bullet:</b> {{ s.original_bullet }}</p>
+        <textarea name="text_{{ s.index }}" rows="2">{{ s.edited_text if s.edited_text else s.suggested_bullet }}</textarea>
+        <details class="sg-why">
+          <summary>Why this edit</summary>
+          <p>{{ s.why }}</p>
+        </details>
+      </article>
+    {% endfor %}
+  </form>
+{% elif view.rewrites_generated %}
+  <div class="sg-empty">
+    No source-backed suggestions for this vacancy. Either the LLM provider is unavailable
+    (check the analysis page's LLM tile) or this role had no rephrasable bullets in your CV.
+    The vacancy requirements and gaps are still below.
+  </div>
+{% else %}
+  <div class="sg-loading"><span class="spinner spinner-dark" aria-hidden="true"></span> Generating suggestions…</div>
+{% endif %}
