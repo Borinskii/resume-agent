@@ -224,8 +224,8 @@ def main() -> int:
         r = client.get(f"/editor/{analysis_id}/0")
         check("GET /editor/{id}/0 returns 200", r.status_code == 200, f"status={r.status_code}")
         editor_html = r.text
-        check("Editor shows vacancy requirements", "What the role asks for" in editor_html)
-        check("Editor has document pane", 'id="doc-preview"' in editor_html)
+        check("Editor shows requirement chips", "This role wants" in editor_html)
+        check("Editor has integrated document wrap", 'id="ed-doc-wrap"' in editor_html)
         check("Editor exposes download links", "/download?fmt=docx" in editor_html)
 
         r = client.post(f"/editor/{analysis_id}/0/apply", data={})

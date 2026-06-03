@@ -183,7 +183,7 @@ async def editor_rewrites(request: Request, analysis_id: int, role_index: int) -
     rewrites = generate_rewrites_for_top_role(roles[role_index], cv_text) if cv_text else []
     save_role_rewrites(analysis_id, role_index, rewrites)
     view = build_editor_view(record, encryption, role_index, get_role_edits(analysis_id, role_index), rewrites)
-    return templates.TemplateResponse(request, "_editor_suggestions.html", {"view": view})
+    return templates.TemplateResponse(request, "_editor_doc.html", {"view": view})
 
 
 @app.post("/editor/{analysis_id}/{role_index}/apply", response_class=HTMLResponse)
@@ -205,7 +205,7 @@ async def editor_apply(request: Request, analysis_id: int, role_index: int) -> H
     save_role_edits(analysis_id, role_index, edits)
 
     view = build_editor_view(record, encryption, role_index, get_role_edits(analysis_id, role_index), rewrites)
-    return templates.TemplateResponse(request, "_editor_preview.html", {"view": view})
+    return templates.TemplateResponse(request, "_editor_doc.html", {"view": view})
 
 
 @app.get("/editor/{analysis_id}/{role_index}/download")
