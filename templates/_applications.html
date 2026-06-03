@@ -1,0 +1,50 @@
+{% if not applications %}
+  <p class="muted-copy">No queued applications yet. Click "Queue for manual apply" on a role to add one — auto-apply is disabled by policy.</p>
+{% else %}
+  <table class="apps-table">
+    <thead>
+      <tr>
+        <th>Role</th>
+        <th>Company</th>
+        <th>Status</th>
+        <th>Updated</th>
+        <th>Update</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for app in applications %}
+        <tr class="apps-row apps-status-{{ app.status|replace('_', '-') }}">
+          <td>
+            <a href="{{ app.job_url }}" target="_blank" rel="noopener noreferrer">{{ app.title }}</a>
+            {% if app.note %}<small>{{ app.note }}</small>{% endif %}
+          </td>
+          <td>{{ app.company }}</td>
+          <td><span class="status-pill">{{ app.status|replace('_', ' ') }}</span></td>
+          <td>{{ app.updated_at[:16].replace('T', ' ') }}</td>
+          <td>
+            <form
+              hx-post="/applications/{{ app.id }}/status"
+              hx-target="#applications-list"
+              hx-swap="innerHTML"
+              class="status-form"
+            >
+              <select name="status">
+                <option value="manual_confirmation_required" {% if app.status == 'manual_confirmation_required' %}selected{% endif %}>manual confirmation</option>
+                <option value="queued" {% if app.status == 'queued' %}selected{% endif %}>queued</option>
+                <option value="manual_intervention_required" {% if app.status == 'manual_intervention_required' %}selected{% endif %}>manual intervention</option>
+                <option value="sent" {% if app.status == 'sent' %}selected{% endif %}>sent</option>
+                <option value="failed" {% if app.status == 'failed' %}selected{% endif %}>failed</option>
+                <option value="expired" {% if app.status == 'expired' %}selected{% endif %}>expired</option>
+                <option value="response_received" {% if app.status == 'response_received' %}selected{% endif %}>response received</option>
+                <option value="no_response" {% if app.status == 'no_response' %}selected{% endif %}>no response</option>
+                <option value="withdrawn" {% if app.status == 'withdrawn' %}selected{% endif %}>withdrawn</option>
+              </select>
+              <input type="text" name="note" value="{{ app.note }}" placeholder="Optional note">
+              <button type="submit">Save</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}

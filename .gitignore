@@ -1,0 +1,54 @@
+# --- Secrets / environment --------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Python -----------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+
+# --- App data / generated at runtime (CV ciphertext, Fernet key, sqlite) ----
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite3
+*.db
+.fernet_key
+.session_secret
+
+# --- Build artifacts --------------------------------------------------------
+dist/
+build/
+*.whl
+
+# --- IDE / editor -----------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS junk ----------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs -------------------------------------------------------------------
+*.log
+
+# --- Agent / local tooling --------------------------------------------------
+.claude/

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CV-Job Match Agent</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/styles.css') }}?v=selection-2">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+    <script src="{{ url_for('static', path='js/app.js') }}?v=selection-2" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Evidence-first matching</p>
+          <h1>CV-Job Match Agent</h1>
+        </div>
+        <div class="topbar-actions" aria-label="System status">
+          <span class="policy-chip">Auto-apply off</span>
+          <span class="policy-chip policy-chip-safe">LinkedIn scraping disabled</span>
+          <button
+            type="button"
+            class="policy-chip policy-chip-danger"
+            data-delete-account
+            title="Hard-delete every analysis tied to this session"
+          >Delete my data</button>
+        </div>
+      </header>
+
+      <div id="error-banner" class="error-banner" hidden role="alert"></div>
+
+      <main class="workspace">
+        <section class="intake-panel" aria-labelledby="source-title">
+          <div class="panel-heading">
+            <p class="eyebrow">Source intake</p>
+            <h2 id="source-title">Candidate profile</h2>
+          </div>
+
+          <form
+            class="analysis-form"
+            method="post"
+            action="/analyze"
+            enctype="multipart/form-data"
+            hx-post="/analyze"
+            hx-target="#analysis-results"
+            hx-swap="innerHTML"
+            hx-indicator="#submit-spinner"
+            hx-encoding="multipart/form-data"
+            data-analysis-form
+          >
+            <label class="field-label" for="resume">CV / Resume</label>
+            <label class="file-drop" for="resume" data-file-drop>
+              <span class="file-drop-title">Drop PDF, DOCX, TXT or MD — or click to select</span>
+              <span class="file-drop-name" data-file-name>No file selected</span>
+              <input id="resume" name="resume" type="file" accept=".pdf,.txt,.md,.docx">
+            </label>
+
+            <label class="field-label" for="target_text">Target job text or URLs</label>
+            <textarea
+              id="target_text"
+              name="target_text"
+              rows="7"
+              placeholder="Paste a job description, or add one URL per line."
+            ></textarea>
+
+            <div class="two-field-grid">
+              <div>
+                <label class="field-label" for="github_url">GitHub</label>
+                <input id="github_url" name="github_url" type="text" placeholder="github.com/user">
+              </div>
+              <div>
+                <label class="field-label" for="linkedin_url">LinkedIn URL</label>
+                <input id="linkedin_url" name="linkedin_url" type="text" placeholder="linkedin.com/in/user">
+              </div>
+            </div>
+
+            <label class="field-label" for="linkedin_text">LinkedIn profile text</label>
+            <textarea
+              id="linkedin_text"
+              name="linkedin_text"
+              rows="5"
+              placeholder="Optional manual paste or export text. URLs are not scraped."
+            ></textarea>
+
+            <label class="llm-toggle">
+              <input type="checkbox" name="use_llm" value="on">
+              <span>Generate source-backed bullet rewrites with a local Ollama model (preferred) or Fireworks. Provider is picked per <code>LLM_PROVIDER</code> in <code>.env</code>.</span>
+            </label>
+
+            <button class="primary-action" type="submit">
+              <span class="primary-action-label">Analyze fit</span>
+              <span class="primary-action-spinner" id="submit-spinner" aria-live="polite">
+                <span class="spinner" aria-hidden="true"></span>
+                <span>Analyzing… this can take up to 15 seconds.</span>
+              </span>
+            </button>
+          </form>
+
+          {% if history %}
+          <section class="history-panel" aria-labelledby="history-title">
+            <h3 id="history-title">Recent analyses</h3>
+            <ul class="history-list">
+              {% for item in history %}
+                <li>
+                  <strong>{{ item.top_score }}</strong>
+                  <span>{{ item.top_title or "No top role" }}</span>
+                  <em>{{ item.created_at[:16].replace('T', ' ') }}</em>
+                  <div class="history-actions">
+                    <a href="/exports/{{ item.id }}/markdown">md</a>
+                    <a href="/exports/{{ item.id }}/docx">docx</a>
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          </section>
+          {% endif %}
+        </section>
+
+        <section class="results-panel" aria-live="polite" aria-labelledby="analysis-title">
+          <div class="panel-heading results-heading">
+            <div>
+              <p class="eyebrow">Benchmarks</p>
+              <h2 id="analysis-title">Role readiness</h2>
+            </div>
+            <span class="score-method">Deterministic scoring</span>
+          </div>
+
+          <div id="analysis-results">
+            {% include "_empty_state.html" %}
+          </div>
+
+          <section class="applications-section" aria-labelledby="apps-title">
+            <h3 id="apps-title">Apply queue (manual confirmation only)</h3>
+            <div id="applications-list" hx-get="/applications" hx-trigger="load">
+              <p class="muted-copy">Loading apply queue…</p>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
